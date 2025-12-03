@@ -15,7 +15,8 @@ ontonote4ner_cn_path = '../data/datasets/OntoNote4NER'
 msra_ner_cn_path = '../data/datasets/msra'
 resume_ner_path = '../data/datasets/ResumeNER'
 weibo_ner_path = '../data/datasets/Weibo'
-
+imcs_ner_path = '../data/datasets/IMCS_NER'
+cmeee_ner_path = '../data/datasets/CMeEE-V2-Resplit-CoNLL'
 
 
 # yangjie_rich_pretrain_unigram_path = '{}/gigaword_chn.all.a2b.uni.ite50.vec'

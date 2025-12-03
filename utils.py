@@ -440,6 +440,133 @@ def size2MB(size_,type_size=4):
 
     return num * type_size /1000 /1000
 
+def load_label_mapping(file_path, label_to_id):
+    """
+    Reads the hierarchy file and maps label IDs to their General Categories.
+    
+    Args:
+        file_path (str): Path to the hierarchy file.
+        label_to_id (dict): Dictionary mapping label strings to IDs.
+        
+    Returns:
+        tuple: (disease_ids, other_ids, ignore_ids)
+    """
+    # Read hierarchy file
+    label_category_map = {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                label = parts[0]
+                category = parts[1]
+                label_category_map[label] = category
+
+    disease_ids = set()
+    other_ids = set()
+    ignore_ids = set()
+
+    for label, label_id in label_to_id.items():
+        # Handle 'O' and padding
+        if label == 'O' or label == '<pad>' or label == '<unk>':
+            ignore_ids.add(label_id)
+            continue
+        
+        # Strip BIO/BMES tags
+        # Assuming format like B-Type or I-Type
+        if '-' in label:
+            clean_label = label.split('-', 1)[1]
+        else:
+            clean_label = label
+            
+        category = label_category_map.get(clean_label)
+        
+        if category == 'disease' or category == 'dis':
+            disease_ids.add(label_id)
+        elif category in ['symptom', 'body', 'sym']:
+            other_ids.add(label_id)
+        else:
+            # If not found in hierarchy, maybe treat as ignore or just skip?
+            # User said: "ignore_ids: IDs for 'O' tag or padding."
+            # If it's a label that is not 'O' but not in hierarchy, it's ambiguous.
+            # But based on the task, it seems all relevant labels should be in hierarchy.
+            pass
+            
+    return disease_ids, other_ids, ignore_ids
+
+def calculate_hsr_loss(hidden_states, labels, disease_ids, other_ids, alpha=60.0):
+    """
+    Calculates the Half-Sibling Regression (HSR) loss.
+    
+    Args:
+        hidden_states (torch.Tensor): [Batch, Seq, Dim]
+        labels (torch.Tensor): [Batch, Seq]
+        disease_ids (set): Set of label IDs for 'Disease'.
+        other_ids (set): Set of label IDs for 'Other' (Symptom/Body).
+        alpha (float): Ridge regression parameter.
+        
+    Returns:
+        torch.Tensor: The HSR loss.
+    """
+    batch_size, seq_len, dim = hidden_states.shape
+    
+    # Flatten
+    hidden_states_flat = hidden_states.reshape(-1, dim) # [N_tokens, Dim]
+    labels_flat = labels.view(-1) # [N_tokens]
+    
+    device = hidden_states.device
+    
+    # Create masks
+    disease_mask = torch.zeros_like(labels_flat, dtype=torch.bool)
+    other_mask = torch.zeros_like(labels_flat, dtype=torch.bool)
+    
+    for did in disease_ids:
+        disease_mask |= (labels_flat == did)
+        
+    for oid in other_ids:
+        other_mask |= (labels_flat == oid)
+        
+    V_D = hidden_states_flat[disease_mask] # [N_D, Dim]
+    V_N = hidden_states_flat[other_mask]   # [N_N, Dim]
+    
+    # Safety Check
+    if V_D.shape[0] == 0 or V_N.shape[0] == 0:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+        
+    # Transpose to match the notebook's logic (Features x Samples)
+    # Z_D: [Dim, N_D]
+    # Z_N: [Dim, N_N]
+    Z_D = V_D.t()
+    Z_N = V_N.t()
+    
+    # Ridge Regression: W = (Z_D^T Z_D + alpha * I)^-1 Z_D^T Z_N
+    # We want to predict Z_N from Z_D: Z_N_hat = Z_D @ W
+    
+    # Cov: [N_D, N_D]
+    Cov = Z_D.t() @ Z_D + alpha * torch.eye(Z_D.shape[1], device=device)
+    
+    # RHS: [N_D, N_N]
+    RHS = Z_D.t() @ Z_N
+    
+    # Solve for W: [N_D, N_N]
+    # Use torch.linalg.solve for stability
+    try:
+        W = torch.linalg.solve(Cov, RHS)
+    except AttributeError:
+        # Fallback for older PyTorch versions
+        W, _ = torch.solve(RHS, Cov)
+    
+    # G_hat: [Dim, N_N]
+    G_hat = Z_D @ W
+    
+    # Loss: Frobenius norm
+    # Use torch.norm for compatibility
+    loss = torch.norm(G_hat, p='fro')
+    
+    return loss
+
 if __name__ == '__main__':
     a = get_peking_time()
     print(a)

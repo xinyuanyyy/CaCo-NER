@@ -14,6 +14,7 @@ import copy
 from utils import size2MB
 from utils import MyDropout
 import random
+from utils import calculate_hsr_loss
 def get_embedding(max_seq_len, embedding_dim, padding_idx=None, rel_pos_init=0):
     """Build sinusoidal embeddings.
     This matches the implementation in tensor2tensor, but differs slightly
@@ -230,7 +231,8 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                  rel_pos_shared=True,max_seq_len=-1,k_proj=True,q_proj=True,v_proj=True,r_proj=True,
                  self_supervised=False,attn_ff=True,pos_norm=False,ff_activate='relu',rel_pos_init=0,
                  abs_pos_fusion_func='concat',embed_dropout_pos='0',
-                 four_pos_shared=True,four_pos_fusion=None,four_pos_fusion_shared=True,bert_embedding=None,is_ctr=False,id_to_label=None,temp=0.07,only_head=False):
+                 four_pos_shared=True,four_pos_fusion=None,four_pos_fusion_shared=True,bert_embedding=None,is_ctr=False,id_to_label=None,temp=0.07,only_head=False,hard_k=0,hard_weight=0.0,
+                 disease_ids=None, other_ids=None, lambda_hsr=0.0):
         '''
         :param rel_pos_init: 如果是0，那么从-max_len到max_len的相对位置编码矩阵就按0-2*max_len来初始化，
         如果是1，那么就按-max_len,max_len来初始化
@@ -243,6 +245,11 @@ class Lattice_Transformer_SeqLabel(nn.Module):
         self.id_to_label = id_to_label
         self.temp = temp
         self.only_head=only_head
+        self.hard_k = hard_k
+        self.hard_weight = hard_weight
+        self.disease_ids = disease_ids
+        self.other_ids = other_ids
+        self.lambda_hsr = lambda_hsr
 
 
         self.use_bert = False
@@ -592,7 +599,7 @@ class Lattice_Transformer_SeqLabel(nn.Module):
         pred = self.output(encoded)
 
         if self.is_ctr:
-            infoNCEloss = batchCtrLoss(encoded, target,self.id_to_label,self.temp)
+            infoNCEloss = batchCtrLoss(encoded, target,self.id_to_label,self.temp, hard_k=self.hard_k, hard_weight=self.hard_weight)
             return {'loss': infoNCEloss}
 
         else:
@@ -612,6 +619,10 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                     # print('self_supervised_loss:{}'.format(self_supervised_loss))
                     # print('supervised_loss:{}'.format(loss))
                     loss += self_supervised_loss
+                
+                if self.disease_ids is not None and self.other_ids is not None and self.lambda_hsr > 0:
+                    hsr_loss = calculate_hsr_loss(encoded, target, self.disease_ids, self.other_ids)
+                    loss += self.lambda_hsr * hsr_loss
 
                 return {'loss': loss}
             else:
@@ -1897,7 +1908,7 @@ class Lattice_Transformer_SeqLabel_nocrf(nn.Module):
     #     print('model mode get eval !')
     #     super().eval()
 
-def batchCtrLoss(logits, labels,id_to_label,temp):
+def batchCtrLoss(logits, labels,id_to_label,temp, hard_k=10, hard_weight=1.0):
     """
 
     :param logits:
@@ -1960,12 +1971,12 @@ def batchCtrLoss(logits, labels,id_to_label,temp):
         # posit_list.reverse()
         # random.shuffle(posit_list)
         # positsPermute=torch.stack(posit_list, 0)
-        loss +=batchInstanceLoss(posits, negts,temp)  # type, label_to_logits
+        loss +=batchInstanceLoss(posits, negts,temp, hard_k=hard_k, hard_weight=hard_weight)  # type, label_to_logits
 
 
     return loss
 
-def batchCtrLoss_withO(logits, labels,id_to_label,temp):
+def batchCtrLoss_withO(logits, labels,id_to_label,temp, hard_k=10, hard_weight=1.0):
     """
 
     :param logits:
@@ -2028,62 +2039,77 @@ def batchCtrLoss_withO(logits, labels,id_to_label,temp):
         # posit_list.reverse()
         # random.shuffle(posit_list)
         # positsPermute=torch.stack(posit_list, 0)
-        loss +=batchInstanceLoss(posits, negts,temp)  # type, label_to_logits
+        loss +=batchInstanceLoss(posits, negts,temp, hard_k=hard_k, hard_weight=hard_weight)  # type, label_to_logits
 
 
     return loss
 
-def batchInstanceLoss(posits,negts,temp=0.07):
-    # posit=torch.unsqueeze(posits, 0) # 1xC
-    q = nn.functional.normalize(posits, dim=1)
-    pos_num=q.shape[0]
 
-    # k = nn.functional.normalize(posits, dim=1)
+
+def batchInstanceLoss(posits,negts,temp=0.07, hard_k=10, hard_weight=1.0):
+    """
+    Compute instance-level InfoNCE loss for a set of positives `posits` and negatives `negts`.
+
+    Adds online hard-negative mining by up-weighting the top-`hard_k` negatives
+    (by cosine similarity) for each positive with a multiplicative factor of
+    `(1 + hard_weight)`. Keep defaults so existing callers remain compatible.
+
+    Args:
+        posits: Tensor, shape (P, C) positive embeddings
+        negts: Tensor, shape (N, C) negative embeddings
+        temp: float, temperature for scaling logits
+        hard_k: int, number of hardest negatives to up-weight per positive
+        hard_weight: float, multiplicative weight applied to selected hard negatives
+    """
+    q = nn.functional.normalize(posits, dim=1)
+    pos_num = q.shape[0]
+
     criterion = nn.CrossEntropyLoss().to(q.device)
 
-    n=nn.functional.normalize(negts, dim=1)
-    pos_sim=torch.einsum('nc,kc->nk', [q, q])#
-    neg_sim = torch.einsum('nc,kc->nk', [q, n])
+    # normalize negatives
+    if negts.numel() == 0:
+        return torch.tensor(0.0).type_as(posits)
+    n = nn.functional.normalize(negts, dim=1)
 
-    pos_score=torch.zeros((pos_num,pos_num-1)).to(q.device)
+    # pairwise similarities
+    pos_sim = torch.einsum('nc,kc->nk', [q, q])   # (P, P)
+    neg_sim = torch.einsum('nc,kc->nk', [q, n])  # (P, N)
+
+    # build positive score matrix where for each i we exclude self-similarity
+    pos_score = torch.zeros((pos_num, pos_num - 1), device=q.device)
     for i in range(pos_num):
-        pos_score[i]=torch.cat((pos_sim[i][:i],pos_sim[i][i+1:]),dim=-1)
+        pos_score[i] = torch.cat((pos_sim[i][:i], pos_sim[i][i+1:]), dim=-1)
 
-    pos_score.unsqueeze_(-1) #[61,60,1]
-    neg_sim.unsqueeze_(-2)
-    neg_score=neg_sim.expand((pos_score.shape[:2]+(-1,)))
+    # Hard negative mining: up-weight top-k negatives per query by increasing their logits
+    if hard_k > 0 and hard_weight != 0.0 and neg_sim.size(1) > 0:
+        k = min(int(hard_k), neg_sim.size(1))
+        # get indices of top-k hardest negatives per row
+        topk_vals, topk_idx = torch.topk(neg_sim, k=k, dim=1)
+        
+        # create mask
+        hard_mask = torch.zeros_like(neg_sim)
+        hard_mask.scatter_(1, topk_idx, 1.0)
+        
+        # 【关键修改】只对 sim > 0 的部分进行加权
+        # 如果 sim < 0，乘以 (1+weight) 会让它变得更小（更远），反而减少了Loss
+        positive_sim_mask = (neg_sim > 0).float()
+        
+        # 只有同时满足 "是Top-K" 和 "相似度为正" 时，才应用权重
+        final_weight_mask = hard_mask * positive_sim_mask
+        
+        neg_sim = neg_sim * (1.0 + final_weight_mask * hard_weight)
 
-    logits=torch.cat((pos_score,neg_score),dim=-1)
+    # combine pos and neg scores into logits
+    # shape manipulations to align dims
+    pos_score = pos_score.unsqueeze(-1)                # (P, P-1, 1)
+    neg_score = neg_sim.unsqueeze(-2).expand(pos_score.shape[0], pos_score.shape[1], neg_sim.size(1))
+
+    logits = torch.cat((pos_score, neg_score), dim=-1)  # (P, P-1, 1+N)
     logits = logits.reshape((-1, logits.shape[-1]))
-    logits /= temp
+    logits = logits / temp
 
-    labels = torch.zeros(logits.shape[0], dtype=torch.long).to(logits.device)
+    labels = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
     loss = criterion(logits, labels)
-
-    #     logits = torch.cat([l_pos, l_neg], dim=1)
-    #     logits /= 0.07
-    #     labels = torch.zeros(logits.shape[0], dtype=torch.long).to(logits.device)
-    #     loss = criterion(logits, labels)
-    #
-    #     b=b.expand(a.shape[:2] + (-1,)).shape
-    #     cat(pos,neg_sim[i])
-    #
-    # torch.triu(pos_sim, diagonal=1)[:-1,1:]
-    #
-    # index=pos_sim.nonzero()#
-    # pos_sim=pos_sim[index.T[0],index.T[1]]
-    #
-    # l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)#
-    # l_neg = torch.einsum('nc,kc->nk', [q, n])#youwenti:meiyou normalize!!
-    #
-    # logits = torch.cat([l_pos, l_neg], dim=1)
-    #
-    # logits /= 0.07 #self.T
-    #
-    # labels = torch.zeros(logits.shape[0], dtype=torch.long).to(logits.device)
-    #
-    # criterion = nn.CrossEntropyLoss().to(logits.device)
-    # loss=criterion(logits,labels)
     return loss
 
 
