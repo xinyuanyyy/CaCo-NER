@@ -3,3 +3,15 @@ __pycache__/
 cache/
 */log/
 runs
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Dataset temp
+*.conll-checkpoint
+*.txt-checkpoint
+
+# Python cache
+__pycache__/
+*.pyc
+

@@ -221,13 +221,13 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
         device = torch.device('cuda:{}'.format(args.device))
     else:
         device = torch.device('cpu')
-    print(device)
+    # print(device)
 
     refresh_data = True
 
 
-    for k,v in args.__dict__.items():
-        print_info('{}:{}'.format(k,v))
+    # for k,v in args.__dict__.items():
+    #     print_info('{}:{}'.format(k,v))
 
     raw_dataset_cache_name = os.path.join('../cache',args.dataset+
                               '_trainClip:{}'.format(args.train_clip)
@@ -484,18 +484,18 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
     # max_seq_len = max(max(datasets['train']['seq_len']),max(datasets['dev']['seq_len']),max(datasets['test']['seq_len']))
     import copy
     max_seq_len = max(* map(lambda x:max(x['seq_len']),datasets.values()))
-    print(max_seq_len)
+    # print(max_seq_len)
 
-    show_index = 4
-    print('raw_chars:{}'.format(list(datasets['train'][show_index]['raw_chars'])))
-    print('lexicons:{}'.format(list(datasets['train'][show_index]['lexicons'])))
-    print('lattice:{}'.format(list(datasets['train'][show_index]['lattice'])))
-    print('raw_lattice:{}'.format(list(map(lambda x:vocabs['lattice'].to_word(x),
-                                      list(datasets['train'][show_index]['lattice'])))))
-    print('lex_s:{}'.format(list(datasets['train'][show_index]['lex_s'])))
-    print('lex_e:{}'.format(list(datasets['train'][show_index]['lex_e'])))
-    print('pos_s:{}'.format(list(datasets['train'][show_index]['pos_s'])))
-    print('pos_e:{}'.format(list(datasets['train'][show_index]['pos_e'])))
+    # show_index = 4
+    # print('raw_chars:{}'.format(list(datasets['train'][show_index]['raw_chars'])))
+    # print('lexicons:{}'.format(list(datasets['train'][show_index]['lexicons'])))
+    # print('lattice:{}'.format(list(datasets['train'][show_index]['lattice'])))
+    # print('raw_lattice:{}'.format(list(map(lambda x:vocabs['lattice'].to_word(x),
+    #                                   list(datasets['train'][show_index]['lattice'])))))
+    # print('lex_s:{}'.format(list(datasets['train'][show_index]['lex_s'])))
+    # print('lex_e:{}'.format(list(datasets['train'][show_index]['lex_e'])))
+    # print('pos_s:{}'.format(list(datasets['train'][show_index]['pos_s'])))
+    # print('pos_e:{}'.format(list(datasets['train'][show_index]['pos_e'])))
 
     # exit(1208)
 
@@ -518,14 +518,14 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
     from utils import norm_static_embedding
     # print(embeddings['char'].embedding.weight[:10])
     if args.norm_embed>0:
-        print('embedding:{}'.format(embeddings['char'].embedding.weight.size()))
-        print('norm embedding')
+        # print('embedding:{}'.format(embeddings['char'].embedding.weight.size()))
+        # print('norm embedding')
         for k,v in embeddings.items():
             norm_static_embedding(v,args.norm_embed)
 
     if args.norm_lattice_embed>0:
-        print('embedding:{}'.format(embeddings['lattice'].embedding.weight.size()))
-        print('norm lattice embedding')
+        # print('embedding:{}'.format(embeddings['lattice'].embedding.weight.size()))
+        # print('norm lattice embedding')
         for k,v in embeddings.items():
             norm_static_embedding(v,args.norm_embed)
 
@@ -683,8 +683,8 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
         dataSet_writer.write('loaded succeed! ck:{}\n'.format(checkpoint))
         dataSet_writer.flush()
 
-    for n,p in model.named_parameters():
-        print('{}:{}'.format(n,p.size()))
+    # for n,p in model.named_parameters():
+    #     print('{}:{}'.format(n,p.size()))
 
     # exit(1208)
 
@@ -727,7 +727,7 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
                     except:
                         print_info(n)
                         exit(1208)
-            print_info('{}init pram{}'.format('*' * 15, '*' * 15))
+            # print_info('{}init pram{}'.format('*' * 15, '*' * 15))
 
     loss = LossInForward()
     encoding_type = 'bio'
