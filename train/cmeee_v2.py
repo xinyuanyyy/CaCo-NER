@@ -15,15 +15,16 @@ stage1_param = {
     'wd':0.2,
     'warmup':0.1,
     'temp':0.07,
-    'hard_k': 10,
-    'hard_weight': 1
+    'hard_k': 5,
+    'hard_weight': 0.1
 }
 stage2_param = {
-    'batch_2':16,
+    'batch_2': 16,
     'lr_2':0.0004,
     'warmup_2':0.1,
     'wd_2':  0,
-    'lambda_hsr': 0.1
+    'lambda_hsr': 0.0,
+    'cf_lambda': 0.1
 }
 
 
@@ -52,38 +53,52 @@ writer.flush()
 
 
 # stage1
-writer.write('\n'+'-'*27+' Stage1 Parameter '+'-'*27+'\n')
-writer.write(str(stage1_param)+'\n')
-writer.flush()
+# writer.write('\n'+'-'*27+' Stage1 Parameter '+'-'*27+'\n')
+# writer.write(str(stage1_param)+'\n')
+# writer.flush()
 
-metric_ctr,state_path_ctr=flat_main(stage1_param['batch'], stage1_param['lr'], stage1_param['dim'], 
-                                    stage1_param['head'], stage1_param['warmup'],
-                                    dataset=data,device=device,ctr=True,
-                                    output_dir=output_dir,weight_decay=stage1_param['wd'],
-                                    temp=stage1_param['temp'],seed=fixed_seed,
-                                    hard_k=stage1_param['hard_k'], hard_weight=stage1_param['hard_weight']) # ck=checkpoint
+# msg = "🚀 START STAGE 1 TRAINING 🚀"
+# width = 50
 
-writer.write(str(metric_ctr)+'\n')
-writer.write(state_path_ctr+'\n')
-writer.write('-' * 72 + '\n\n')
-writer.flush()
+# print("\n" + "#" * width)
+# print(f"#{msg.center(width-4)}#")
+# print("#" * width + "\n")
 
-# state_path_ctr = '../runs/cmeee_v22025-12-02-12-44-17/history/result_2025_12_02_12_44_18_CTR/Flat_eval_bert-base-chinese_e_56_f_185.3918218305034.bin'
+# metric_ctr,state_path_ctr=flat_main(stage1_param['batch'], stage1_param['lr'], stage1_param['dim'], 
+#                                     stage1_param['head'], stage1_param['warmup'],
+#                                     dataset=data,device=device,ctr=True,
+#                                     output_dir=output_dir,weight_decay=stage1_param['wd'],
+#                                     temp=stage1_param['temp'],seed=fixed_seed,
+#                                     hard_k=stage1_param['hard_k'], hard_weight=stage1_param['hard_weight']) # ck=checkpoint
 
+# writer.write(str(metric_ctr)+'\n')
+# writer.write(state_path_ctr+'\n')
+# writer.write('-' * 72 + '\n\n')
+# writer.flush()
+
+state_path_ctr = r'/home/u2025170862/jupyterlab/nerco/runs/cmeee_v2-2025-12-05-00-44-23/history/result_2025_12_05_00_44_24_CTR/Flat_eval_bert-base-chinese_e_6_f_25.211872666489842.bin'
 
 # stage2
 writer.write('\n'+'-'*27+' Stage2 Parameter '+'-'*27+'\n')
 writer.write(str(stage2_param)+'\n')
 writer.flush()
 
+msg = "🚀 START STAGE 2 TRAINING 🚀"
+width = 50
+
+print("\n" + "#" * width)
+print(f"#{msg.center(width-4)}#")
+print("#" * width + "\n")
+
 second_metric, state_path = flat_main(stage2_param['batch_2'], stage2_param['lr_2'],stage1_param['dim'], 
                                       stage1_param['head'], stage2_param['warmup_2'], dataset=data, device=device,
                                ck=state_path_ctr, output_dir=output_dir,
                                weight_decay=stage2_param['wd_2'],only_head=False,
-                               seed=fixed_seed, lambda_hsr=stage2_param['lambda_hsr'])
+                   seed=fixed_seed, lambda_hsr=stage2_param['lambda_hsr'], cf_lambda=stage2_param['cf_lambda'])
 
 
 
 writer.write(str(second_metric) + '\n')
 writer.write(state_path+ '\n\n')
 writer.flush()
+

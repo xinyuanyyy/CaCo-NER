@@ -712,6 +712,8 @@ class Trainer(object):
         with inner_tqdm(total=self.n_steps, postfix='loss:{0:<6.5f}', leave=False, dynamic_ncols=True) as pbar:
             self.pbar = pbar
             avg_loss = 0
+            avg_cf_loss = 0
+            avg_cf_count = 0
             data_iterator = self.data_iterator
             self.batch_per_epoch = data_iterator.num_batches
 
@@ -731,6 +733,18 @@ class Trainer(object):
                     # negative sampling; replace unknown; re-weight batch_y
                     self.callback_manager.on_batch_begin(batch_x, batch_y, indices)
                     prediction = self._data_forward(self.model, batch_x,is_ctr=self.is_ctr)
+
+                    # collect counterfactual stats if provided by model
+                    if isinstance(prediction, dict) and 'cf_loss' in prediction:
+                        try:
+                            avg_cf_loss += float(prediction['cf_loss'].item())
+                        except Exception:
+                            pass
+                        if 'cf_count' in prediction:
+                            try:
+                                avg_cf_count += int(prediction['cf_count'])
+                            except Exception:
+                                pass
 
                     # edit prediction
                     self.callback_manager.on_loss_begin(batch_y, prediction)
@@ -756,8 +770,14 @@ class Trainer(object):
 
                     if self.step % self.print_every == 0:
                         avg_loss = float(avg_loss) / self.print_every
+                        cf_loss_disp = float(avg_cf_loss) / self.print_every
+                        cf_count_disp = float(avg_cf_count) / self.print_every
                         if self.use_tqdm:
-                            print_output = "loss:{:<6.5f}".format(avg_loss)
+                            # show cf stats if available
+                            if avg_cf_loss != 0 or avg_cf_count != 0:
+                                print_output = "loss:{:<6.5f} cf_loss:{:<6.5f} cf_cnt:{:<6.3f}".format(avg_loss, cf_loss_disp, cf_count_disp)
+                            else:
+                                print_output = "loss:{:<6.5f}".format(avg_loss)
                             pbar.update(self.print_every)
                         else:
                             end = time.time()
@@ -766,6 +786,8 @@ class Trainer(object):
                                 epoch, self.step, avg_loss, diff)
                         pbar.set_postfix_str(print_output)
                         avg_loss = 0
+                        avg_cf_loss = 0
+                        avg_cf_count = 0
                     self.callback_manager.on_batch_end()
 
                     if ((self.validate_every > 0 and self.step % self.validate_every == 0) or

@@ -1,6 +1,7 @@
 import os
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 from modeling.modules import Transformer_Encoder
 from fastNLP.modules import ConditionalRandomField
 import collections
@@ -232,7 +233,8 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                  self_supervised=False,attn_ff=True,pos_norm=False,ff_activate='relu',rel_pos_init=0,
                  abs_pos_fusion_func='concat',embed_dropout_pos='0',
                  four_pos_shared=True,four_pos_fusion=None,four_pos_fusion_shared=True,bert_embedding=None,is_ctr=False,id_to_label=None,temp=0.07,only_head=False,hard_k=0,hard_weight=0.0,
-                 disease_ids=None, other_ids=None, lambda_hsr=0.0):
+                 disease_ids=None, other_ids=None, lambda_hsr=0.0,
+                 cf_lambda=0.0):
         '''
         :param rel_pos_init: 如果是0，那么从-max_len到max_len的相对位置编码矩阵就按0-2*max_len来初始化，
         如果是1，那么就按-max_len,max_len来初始化
@@ -250,6 +252,7 @@ class Lattice_Transformer_SeqLabel(nn.Module):
         self.disease_ids = disease_ids
         self.other_ids = other_ids
         self.lambda_hsr = lambda_hsr
+        self.cf_lambda = cf_lambda
 
 
         self.use_bert = False
@@ -599,6 +602,7 @@ class Lattice_Transformer_SeqLabel(nn.Module):
         pred = self.output(encoded)
 
         if self.is_ctr:
+            # 对比学习loss
             infoNCEloss = batchCtrLoss(encoded, target,self.id_to_label,self.temp, hard_k=self.hard_k, hard_weight=self.hard_weight)
             return {'loss': infoNCEloss}
 
@@ -609,6 +613,8 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                 print('debug mode:finish!')
                 exit(1208)
             if self.training:
+                if target is None:
+                    raise ValueError('target(labels) must not be None during training')
                 loss = self.crf(pred, target, mask).mean(dim=0)
                 if self.self_supervised:
                     # print('self supervised loss added!')
@@ -624,12 +630,74 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                     hsr_loss = calculate_hsr_loss(encoded, target, self.disease_ids, self.other_ids)
                     loss += self.lambda_hsr * hsr_loss
 
+                # Counterfactual invariance regularization (only in training and when labels exist)
+                if self.cf_lambda > 0 and target is not None and target.numel() > 0 and self.disease_ids is not None:
+                    # DISEASE_LABEL_IDS: list of disease label ids (e.g., B-DISEASE, I-DISEASE)
+                    DISEASE_LABEL_IDS = list(self.disease_ids)
+
+                    # try to resolve 'O' id from id_to_label; fallback to 0 if unknown
+                    o_id = None
+                    if self.id_to_label is not None:
+                        for _id, _lab in self.id_to_label.items():
+                            if _lab == 'O':
+                                o_id = int(_id)
+                                break
+                    if o_id is None:
+                        o_id = 0
+
+                    # build masks from gold labels: disease vs non-disease entity (exclude O)
+                    disease_mask = torch.zeros_like(target, dtype=torch.bool)
+                    for did in DISEASE_LABEL_IDS:
+                        disease_mask |= (target == int(did))
+                    disease_mask &= mask
+
+                    non_disease_mask = (~disease_mask) & mask & (target != o_id)
+
+                    cf_losses = []
+                    cf_count = 0
+                    for b in range(encoded.size(0)):
+                        dm_b = disease_mask[b]
+                        ndm_b = non_disease_mask[b]
+                        if dm_b.any() and ndm_b.any():
+                            cf_count += 1
+                            g_b = encoded[b][dm_b].mean(dim=0)  # [hidden]
+                            h_non = encoded[b][ndm_b]  # [N_non, hidden]
+
+                            denom = (g_b * g_b).sum()
+                            alpha = (h_non * g_b).sum(dim=-1, keepdim=True) / (denom + 1e-8)
+                            proj = alpha * g_b
+                            h_cf = h_non - proj
+
+                            z = self.output(h_non)
+                            z_cf = self.output(h_cf)
+
+                            p = F.softmax(z, dim=-1)
+                            log_p_cf = F.log_softmax(z_cf, dim=-1)
+
+                            # KL(p || p_cf) = sum p * (log p - log p_cf)
+                            # F.kl_div(input=log_q, target=p) computes KL(p || q)
+                            l_cf_b = F.kl_div(log_p_cf, p, reduction='batchmean')
+                            cf_losses.append(l_cf_b)
+
+                    if len(cf_losses) > 0:
+                        L_cf = torch.stack(cf_losses).mean()
+                    else:
+                        L_cf = encoded.new_tensor(0.0)
+
+                    loss = loss + self.cf_lambda * L_cf
+                    return {'loss': loss, 'cf_loss': L_cf.detach(), 'cf_count': cf_count}
+
                 return {'loss': loss}
             else:
-                # pred, path = self.crf.viterbi_decode(pred, mask)
-                loss = self.crf(pred, target, mask).mean(dim=0)
-                pred, path = self.crf.viterbi_decode(pred, mask)
-                result = {'pred': pred, 'logit':encoded,'loss': loss}
+                # inference/eval: if labels are None, only decode (no counterfactual branch)
+                if target is None:
+                    pred, path = self.crf.viterbi_decode(pred, mask)
+                    result = {'pred': pred, 'logit': encoded}
+                else:
+                    # pred, path = self.crf.viterbi_decode(pred, mask)
+                    loss = self.crf(pred, target, mask).mean(dim=0)
+                    pred, path = self.crf.viterbi_decode(pred, mask)
+                    result = {'pred': pred, 'logit':encoded,'loss': loss}
                 # result = {'pred': pred}
                 if self.self_supervised:
                     chars_pred = self.output_self_supervised(encoded)
@@ -2054,6 +2122,8 @@ def batchInstanceLoss(posits,negts,temp=0.07, hard_k=10, hard_weight=1.0):
     (by cosine similarity) for each positive with a multiplicative factor of
     `(1 + hard_weight)`. Keep defaults so existing callers remain compatible.
 
+    注意：posits 中的样本应全部来自同一语义类别，negts 中不应包含该类别的样本。
+
     Args:
         posits: Tensor, shape (P, C) positive embeddings
         negts: Tensor, shape (N, C) negative embeddings
@@ -2061,14 +2131,16 @@ def batchInstanceLoss(posits,negts,temp=0.07, hard_k=10, hard_weight=1.0):
         hard_k: int, number of hardest negatives to up-weight per positive
         hard_weight: float, multiplicative weight applied to selected hard negatives
     """
+    # 如果正样本太少或者没有负样本，直接返回 0 loss，避免后续维度问题
+    if posits.size(0) <= 1 or negts.numel() == 0:
+        return torch.zeros((), device=posits.device, dtype=posits.dtype, requires_grad=True)
+
     q = nn.functional.normalize(posits, dim=1)
     pos_num = q.shape[0]
 
     criterion = nn.CrossEntropyLoss().to(q.device)
 
     # normalize negatives
-    if negts.numel() == 0:
-        return torch.tensor(0.0).type_as(posits)
     n = nn.functional.normalize(negts, dim=1)
 
     # pairwise similarities

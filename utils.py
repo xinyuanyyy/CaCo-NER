@@ -498,72 +498,79 @@ def load_label_mapping(file_path, label_to_id):
 
 def calculate_hsr_loss(hidden_states, labels, disease_ids, other_ids, alpha=60.0):
     """
-    Calculates the Half-Sibling Regression (HSR) loss.
+    CPU-Offloaded HSR Loss.
     
-    Args:
-        hidden_states (torch.Tensor): [Batch, Seq, Dim]
-        labels (torch.Tensor): [Batch, Seq]
-        disease_ids (set): Set of label IDs for 'Disease'.
-        other_ids (set): Set of label IDs for 'Other' (Symptom/Body).
-        alpha (float): Ridge regression parameter.
-        
-    Returns:
-        torch.Tensor: The HSR loss.
+    Moves the linear algebra operations to CPU to avoid:
+    1. MAGMA errors (Singular matrix on GPU)
+    2. cusparse errors (Backward pass implementation missing/broken on GPU)
     """
     batch_size, seq_len, dim = hidden_states.shape
     
     # Flatten
     hidden_states_flat = hidden_states.reshape(-1, dim) # [N_tokens, Dim]
-    labels_flat = labels.view(-1) # [N_tokens]
+    labels_flat = labels.view(-1)
     
-    device = hidden_states.device
+    original_device = hidden_states.device
     
-    # Create masks
+    # 1. 提取向量 (仍在 GPU 上进行，利用并行优势)
     disease_mask = torch.zeros_like(labels_flat, dtype=torch.bool)
     other_mask = torch.zeros_like(labels_flat, dtype=torch.bool)
     
     for did in disease_ids:
         disease_mask |= (labels_flat == did)
-        
     for oid in other_ids:
         other_mask |= (labels_flat == oid)
         
     V_D = hidden_states_flat[disease_mask] # [N_D, Dim]
     V_N = hidden_states_flat[other_mask]   # [N_N, Dim]
     
-    # Safety Check
     if V_D.shape[0] == 0 or V_N.shape[0] == 0:
-        return torch.tensor(0.0, device=device, requires_grad=True)
-        
-    # Transpose to match the notebook's logic (Features x Samples)
-    # Z_D: [Dim, N_D]
-    # Z_N: [Dim, N_N]
-    Z_D = V_D.t()
-    Z_N = V_N.t()
+        return torch.tensor(0.0, device=original_device, requires_grad=True)
+
+    # ================= 核心修改：搬运到 CPU =================
+    # 将用于矩阵运算的张量转移到 CPU，并转为 double 精度
+    # PyTorch 会自动记录这次移动，反向传播时梯度会正确传回 GPU
+    Z_D_cpu = V_D.t().cpu().double() # [Dim, N_D]
+    Z_N_cpu = V_N.t().cpu().double() # [Dim, N_N]
     
-    # Ridge Regression: W = (Z_D^T Z_D + alpha * I)^-1 Z_D^T Z_N
-    # We want to predict Z_N from Z_D: Z_N_hat = Z_D @ W
+    # 2. 计算特征协方差矩阵 (Dim x Dim)
+    # 此时在 CPU 上运行，使用 MKL/OpenBLAS，极其稳定
+    Cov_feat = Z_D_cpu @ Z_D_cpu.t() 
     
-    # Cov: [N_D, N_D]
-    Cov = Z_D.t() @ Z_D + alpha * torch.eye(Z_D.shape[1], device=device)
+    # 3. 添加正则化
+    # 确保对角线数值足够大，防止奇异
+    identity = torch.eye(dim, dtype=torch.double) # CPU tensor
+    Cov_feat = Cov_feat + alpha * identity
     
-    # RHS: [N_D, N_N]
-    RHS = Z_D.t() @ Z_N
+    # 双重保险：加一个微小的 jitter 防止纯 0 输入导致的数值问题
+    Cov_feat = Cov_feat + 1e-5 * identity
     
-    # Solve for W: [N_D, N_N]
-    # Use torch.linalg.solve for stability
+    # 4. 求解线性方程
+    # M = (Cov_feat)^-1 @ Z_N
     try:
-        W = torch.linalg.solve(Cov, RHS)
-    except AttributeError:
-        # Fallback for older PyTorch versions
-        W, _ = torch.solve(RHS, Cov)
+        # 在 CPU 上，solve 非常可靠
+        # 使用 torch.linalg.solve (PyTorch 1.9+) 或 torch.solve (旧版)
+        try:
+            M = torch.linalg.solve(Cov_feat, Z_N_cpu)
+        except AttributeError:
+            # 兼容旧版本 PyTorch (如 1.7/1.8)
+            M, _ = torch.solve(Z_N_cpu, Cov_feat)
+    except RuntimeError:
+        # 如果连 CPU 都解不出来，说明数据本身有问题（比如全是NaN），返回0梯度避免训练崩溃
+        return torch.tensor(0.0, device=original_device, requires_grad=True)
     
-    # G_hat: [Dim, N_N]
-    G_hat = Z_D @ W
+    # 5. 计算投影并计算 Loss
+    # G_hat = Z_D @ Z_D^T @ M
+    # 为了节省显存和避免复杂计算，我们在 CPU 上算完再送回 GPU
+    Kernel = Z_D_cpu @ Z_D_cpu.t()
+    G_hat_cpu = Kernel @ M
     
-    # Loss: Frobenius norm
-    # Use torch.norm for compatibility
-    loss = torch.norm(G_hat, p='fro')
+    # 6. 将结果送回 GPU 并在 GPU 上计算最终的 Norm
+    # 这一步将梯度链重新接回 GPU
+    G_hat_gpu = G_hat_cpu.to(original_device).type_as(hidden_states).t()
+    V_N_gpu = V_N.to(original_device).type_as(hidden_states)
+    
+    loss = torch.norm(V_N_gpu - G_hat_gpu, p='fro')
     
     return loss
 

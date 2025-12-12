@@ -50,13 +50,14 @@ from fastNLP_module import BertEmbedding
 #     traceback.print_stack(file=log)
 #     log.write(warnings.formatwarning(message, category, filename, lineno, line))
 # warnings.showwarning = warn_with_traceback
-def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',device='0',ck=None,ctr=False,output_dir=None,weight_decay=0,temp=0.07,only_head=0,layer=1,epoch=100,fix_bert_epoch=20,bert_base='cn-wwm',seed=1080956,max_patience=15,hard_k=0,hard_weight=0.0,debug_sample=False, lambda_hsr=0.0):
+def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',device='0',ck=None,ctr=False,output_dir=None,weight_decay=0,temp=0.07,only_head=0,layer=1,epoch=100,fix_bert_epoch=20,bert_base='cn-wwm',seed=1080956,max_patience=15,hard_k=0,hard_weight=0.0,debug_sample=False, lambda_hsr=0.0, cf_lambda=0.0):
     fitlog.set_rng_seed(load_dataset_seed)
     parser = argparse.ArgumentParser()
     # performance inrelevant
     parser.add_argument('--hard_k', default=hard_k, type=int)
     parser.add_argument('--hard_weight', default=hard_weight, type=float)
     parser.add_argument('--lambda_hsr', default=lambda_hsr, type=float, help='Weight for Half-Sibling Regression loss')
+    parser.add_argument('--cf_lambda', default=cf_lambda, type=float, help='Weight for counterfactual invariance loss')
     parser.add_argument('--update_every',type=int,default=1)
     parser.add_argument('--status',choices=['train','test'],default='train')
     parser.add_argument('--use_bert',type=int,default=1)
@@ -223,7 +224,7 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
         device = torch.device('cpu')
     # print(device)
 
-    refresh_data = True
+    refresh_data = False
 
 
     # for k,v in args.__dict__.items():
@@ -310,7 +311,7 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
 
     disease_ids = None
     other_ids = None
-    if args.lambda_hsr > 0 and not is_ctr:
+    if (args.lambda_hsr > 0 or args.cf_lambda > 0) and not is_ctr:
         hierarchy_path = '../data/datasets/CMeEE-V2-Resplit-CoNLL/category_hierarchy.txt'
         if os.path.exists(hierarchy_path) and 'label' in vocabs:
              label_to_id = vocabs['label'].word2idx
@@ -553,9 +554,9 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
     dropout['ff_2'] = args.ff_dropout_2
     dropout['attn'] = args.attn_dropout
 
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
     fitlog.set_rng_seed(args.seed)
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
 
 
     # fitlog.add_hyper(args)
@@ -602,7 +603,8 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
                                              four_pos_fusion_shared=args.four_pos_fusion_shared,
                                              bert_embedding=bert_embedding,is_ctr=is_ctr,id_to_label=id_to_label,temp=temp,only_head=args.only_head,
                                              hard_k=args.hard_k, hard_weight=args.hard_weight,
-                                             disease_ids=disease_ids, other_ids=other_ids, lambda_hsr=args.lambda_hsr)
+                                             disease_ids=disease_ids, other_ids=other_ids, lambda_hsr=args.lambda_hsr,
+                                             cf_lambda=args.cf_lambda)
                 # model2 = Lattice_Transformer_SeqLabel(embeddings['lattice'], embeddings['bigram'], args.hidden,
                 #                                      len(vocabs['label']),
                 #                                      args.head, args.layer, args.use_abs_pos, args.use_rel_pos,
