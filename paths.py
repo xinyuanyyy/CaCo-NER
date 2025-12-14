@@ -18,6 +18,9 @@ weibo_ner_path = '../data/datasets/Weibo'
 imcs_ner_path = '../data/datasets/IMCS_NER'
 cmeee_ner_path = '../data/datasets/CMeEE-V2-Resplit-CoNLL'
 
+# New CMeEE-V2 dataset (9 major categories, test has no gold entities)
+cmeee_v2_big_ner_path = '../data/datasets/CMeEE-V2'
+
 
 # yangjie_rich_pretrain_unigram_path = '{}/gigaword_chn.all.a2b.uni.ite50.vec'
 # yangjie_rich_pretrain_bigram_path = '{}/gigaword_chn.all.a2b.bi.ite50.vec'

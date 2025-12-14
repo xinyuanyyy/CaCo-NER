@@ -1,0 +1,18 @@
+# Major-category mapping for the new CMeEE-V2 dataset
+# Used by load_label_mapping() to build disease_ids / other_ids for HSR and counterfactual invariance.
+# Format: <label_without_BIO_prefix> <category>
+
+# disease
+
+dis disease
+
+# others (mapped to non-disease buckets so they are included in other_ids)
+
+sym symptom
+dru symptom
+equ symptom
+pro symptom
+ite symptom
+mic symptom
+dep symptom
+bod body

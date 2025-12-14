@@ -172,7 +172,7 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
 
 
 
-    parser.add_argument('--dataset', default=dataset, help='weibo|resume|ontonotes|msra|imcs')
+    parser.add_argument('--dataset', default=dataset, help='weibo|resume|ontonotes|msra|imcs|cmeee_v2|cmeee_v2_big')
     # parser.add_argument('--debug',default=1)
 
 
@@ -309,14 +309,27 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
                                                     only_train_min_freq=args.only_train_min_freq
                                                         )
 
+    elif args.dataset == 'cmeee_v2_big':
+        from paths import cmeee_v2_big_ner_path
+        datasets,vocabs,embeddings,id_to_label = load_cmeeev2_big_ner(cmeee_v2_big_ner_path,yangjie_rich_pretrain_unigram_path,yangjie_rich_pretrain_bigram_path,
+                                                        _refresh=refresh_data,index_token=False,
+                                                    _cache_fp=raw_dataset_cache_name,
+                                                    char_min_freq=args.char_min_freq,
+                                                    bigram_min_freq=args.bigram_min_freq,
+                                                    only_train_min_freq=args.only_train_min_freq
+                                                        )
+
     disease_ids = None
     other_ids = None
     if (args.lambda_hsr > 0 or args.cf_lambda > 0) and not is_ctr:
-        hierarchy_path = '../data/datasets/CMeEE-V2-Resplit-CoNLL/category_hierarchy.txt'
+        if args.dataset == 'cmeee_v2_big':
+            hierarchy_path = '../data/datasets/CMeEE-V2/category_hierarchy.txt'
+        else:
+            hierarchy_path = '../data/datasets/CMeEE-V2-Resplit-CoNLL/category_hierarchy.txt'
         if os.path.exists(hierarchy_path) and 'label' in vocabs:
-             label_to_id = vocabs['label'].word2idx
-             disease_ids, other_ids, _ = load_label_mapping(hierarchy_path, label_to_id)
-             print_info(f"Loaded HSR mapping: {len(disease_ids)} disease, {len(other_ids)} other")
+            label_to_id = vocabs['label'].word2idx
+            disease_ids, other_ids, _ = load_label_mapping(hierarchy_path, label_to_id)
+            print_info(f"Loaded HSR mapping: {len(disease_ids)} disease, {len(other_ids)} other")
 
     if args.gaz_dropout < 0:
         args.gaz_dropout = args.embed_dropout
@@ -680,7 +693,15 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
                               debug=args.debug)
 
     if checkpoint:
-        model.load_state_dict(torch.load(checkpoint,map_location=device))
+        ckpt_state = torch.load(checkpoint, map_location=device)
+        incompatible = model.load_state_dict(ckpt_state, strict=False)
+
+        # Backward-compatibility: allow newly added parameters (e.g., disease_axis) to be missing in old checkpoints.
+        # Keep a light log for debugging if needed.
+        if hasattr(incompatible, 'missing_keys') and len(incompatible.missing_keys) > 0:
+            dataSet_writer.write('Missing keys when loading (ignored): {}\n'.format(incompatible.missing_keys))
+        if hasattr(incompatible, 'unexpected_keys') and len(incompatible.unexpected_keys) > 0:
+            dataSet_writer.write('Unexpected keys when loading (ignored): {}\n'.format(incompatible.unexpected_keys))
 
         dataSet_writer.write('loaded succeed! ck:{}\n'.format(checkpoint))
         dataSet_writer.flush()
@@ -925,9 +946,15 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
 
         if is_ctr:
             max_patience=10
+        test_data = datasets.get('test')
+        # New CMeEE-V2 test split contains no gold entity annotations (often all 'O'),
+        # so we avoid using it for metric reporting/early model selection.
+        if args.dataset == 'cmeee_v2_big':
+            test_data = None
+
         trainer = Trainer(datasets['train'],model,optimizer,loss,args.batch,
                           n_epochs=args.epoch,
-                          dev_data=datasets['dev'],test_data=datasets['test'],
+                          dev_data=datasets['dev'],test_data=test_data,
                           metrics=metrics,
                           device=device,callbacks=callbacks,dev_batch_size=args.test_batch,
                           test_use_tqdm=False,check_code_level=-1,

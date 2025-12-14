@@ -267,6 +267,11 @@ class Lattice_Transformer_SeqLabel(nn.Module):
         self.lattice_embed = lattice_embed
         self.bigram_embed = bigram_embed
         self.hidden_size = hidden_size
+
+        # Global disease perturbation axis for counterfactual invariance regularization
+        # Shape: [hidden_size]
+        self.disease_axis = nn.Parameter(torch.randn(hidden_size) * 0.01)
+
         self.label_size = label_size
         self.num_heads = num_heads
         self.num_layers = num_layers
@@ -658,13 +663,21 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                     for b in range(encoded.size(0)):
                         dm_b = disease_mask[b]
                         ndm_b = non_disease_mask[b]
-                        if dm_b.any() and ndm_b.any():
-                            cf_count += 1
-                            g_b = encoded[b][dm_b].mean(dim=0)  # [hidden]
-                            h_non = encoded[b][ndm_b]  # [N_non, hidden]
+                        # As long as there are non-disease tokens, we can compute cf loss.
+                        if ndm_b.any():
+                            g_list = []
+                            if dm_b.any():
+                                g_local = encoded[b][dm_b].mean(dim=0)  # [hidden_size]
+                                g_list.append(g_local)
+                            g_global = self.disease_axis  # [hidden_size]
+                            g_list.append(g_global)
 
-                            denom = (g_b * g_b).sum()
-                            alpha = (h_non * g_b).sum(dim=-1, keepdim=True) / (denom + 1e-8)
+                            g_b = torch.stack(g_list, dim=0).mean(dim=0)  # [hidden_size]
+                            g_b = g_b / (g_b.norm() + 1e-8)
+
+                            h_non = encoded[b][ndm_b]  # [N_non, hidden_size]
+
+                            alpha = (h_non * g_b).sum(dim=-1, keepdim=True)
                             proj = alpha * g_b
                             h_cf = h_non - proj
 
@@ -678,6 +691,7 @@ class Lattice_Transformer_SeqLabel(nn.Module):
                             # F.kl_div(input=log_q, target=p) computes KL(p || q)
                             l_cf_b = F.kl_div(log_p_cf, p, reduction='batchmean')
                             cf_losses.append(l_cf_b)
+                            cf_count += 1
 
                     if len(cf_losses) > 0:
                         L_cf = torch.stack(cf_losses).mean()

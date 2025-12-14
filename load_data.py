@@ -782,6 +782,83 @@ def load_cmeeev2_ner(path,unigram_embedding_path=None,bigram_embedding_path=None
     return datasets, vocabs, embeddings,label_vocab.idx2word
 
 
+@cache_results(_cache_fp='cache/cmeeev2_big_ner',_refresh=False)
+def load_cmeeev2_big_ner(path,unigram_embedding_path=None,bigram_embedding_path=None,index_token=True,
+                         char_min_freq=1,bigram_min_freq=1,only_train_min_freq=0,char_word_dropout=0.01):
+    """Load the new CMeEE-V2 dataset with 9 major entity categories.
+
+    Expected files under `path`:
+      - CMeEE-V2_train.conll
+      - CMeEE-V2_dev.conll
+      - CMeEE-V2_test.conll  (usually contains only 'O' tags; treated as no-gold)
+
+    Format: token<TAB>label per line, sentences separated by blank lines.
+    """
+    from fastNLP.io.loader import ConllLoader
+    from utils import get_bigrams
+
+    loader = ConllLoader(['chars','target'])
+
+    train_path = os.path.join(path, 'CMeEE-V2_train.conll')
+    dev_path = os.path.join(path, 'CMeEE-V2_dev.conll')
+    test_path = os.path.join(path, 'CMeEE-V2_test.conll')
+
+    paths = {
+        'train': train_path,
+        'dev': dev_path,
+        'test': test_path,
+    }
+
+    datasets = {}
+    for k, v in paths.items():
+        bundle = loader.load(v)
+        datasets[k] = bundle.datasets['train']
+
+    for k, v in datasets.items():
+        print('{}:{}'.format(k, len(v)))
+
+    vocabs = {}
+    char_vocab = Vocabulary()
+    bigram_vocab = Vocabulary()
+    label_vocab = Vocabulary()
+
+    for k, v in datasets.items():
+        v.apply_field(get_bigrams, 'chars', 'bigrams')
+
+    char_vocab.from_dataset(datasets['train'], field_name='chars',
+                            no_create_entry_dataset=[datasets['dev'], datasets['test']])
+    label_vocab.from_dataset(datasets['train'], field_name='target')
+    print('label_vocab:{}\n{}'.format(len(label_vocab), label_vocab.idx2word))
+
+    for k, v in datasets.items():
+        v.add_seq_len('chars', new_field_name='seq_len')
+
+    vocabs['char'] = char_vocab
+    vocabs['label'] = label_vocab
+
+    bigram_vocab.from_dataset(datasets['train'], field_name='bigrams',
+                              no_create_entry_dataset=[datasets['dev'], datasets['test']])
+    if index_token:
+        char_vocab.index_dataset(*list(datasets.values()), field_name='chars', new_field_name='chars')
+        bigram_vocab.index_dataset(*list(datasets.values()), field_name='bigrams', new_field_name='bigrams')
+        label_vocab.index_dataset(*list(datasets.values()), field_name='target', new_field_name='target')
+
+    vocabs['bigram'] = bigram_vocab
+
+    embeddings = {}
+    if unigram_embedding_path is not None:
+        unigram_embedding = StaticEmbedding(char_vocab, model_dir_or_name=unigram_embedding_path,
+                                            word_dropout=char_word_dropout,
+                                            min_freq=char_min_freq, only_train_min_freq=only_train_min_freq,)
+        embeddings['char'] = unigram_embedding
+    if bigram_embedding_path is not None:
+        bigram_embedding = StaticEmbedding(bigram_vocab, model_dir_or_name=bigram_embedding_path,
+                                           word_dropout=0.01,
+                                           min_freq=bigram_min_freq, only_train_min_freq=only_train_min_freq)
+        embeddings['bigram'] = bigram_embedding
+    return datasets, vocabs, embeddings, label_vocab.idx2word
+
+
 
 if __name__ == '__main__':
     pass

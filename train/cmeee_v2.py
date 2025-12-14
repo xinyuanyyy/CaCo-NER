@@ -16,7 +16,8 @@ stage1_param = {
     'warmup':0.1,
     'temp':0.07,
     'hard_k': 5,
-    'hard_weight': 0.1
+    'hard_weight': 0.1,
+    'test_batch': 2
 }
 stage2_param = {
     'batch_2': 16,
@@ -24,7 +25,8 @@ stage2_param = {
     'warmup_2':0.1,
     'wd_2':  0,
     'lambda_hsr': 0.0,
-    'cf_lambda': 0.1
+    'cf_lambda': 0.5,
+    'test_batch': 2
 }
 
 
@@ -76,8 +78,8 @@ writer.flush()
 # writer.write('-' * 72 + '\n\n')
 # writer.flush()
 
-state_path_ctr = r'/home/u2025170862/jupyterlab/nerco/runs/cmeee_v2-2025-12-05-00-44-23/history/result_2025_12_05_00_44_24_CTR/Flat_eval_bert-base-chinese_e_6_f_25.211872666489842.bin'
-
+# state_path_ctr = r'/home/u2025170862/jupyterlab/nerco/runs/cmeee_v2-2025-12-05-00-44-23/history/result_2025_12_05_00_44_24_CTR/Flat_eval_bert-base-chinese_e_6_f_25.211872666489842.bin'
+state_path_ctr = r'/home/u2025170862/jupyterlab/nerco/runs/cmeee_v2-2025-12-09-18-15-56/history/result_2025_12_09_18_15_56_CTR/Flat_eval_bert-base-chinese_e_6_f_30.453368724561205.bin'
 # stage2
 writer.write('\n'+'-'*27+' Stage2 Parameter '+'-'*27+'\n')
 writer.write(str(stage2_param)+'\n')
@@ -90,12 +92,26 @@ print("\n" + "#" * width)
 print(f"#{msg.center(width-4)}#")
 print("#" * width + "\n")
 
-second_metric, state_path = flat_main(stage2_param['batch_2'], stage2_param['lr_2'],stage1_param['dim'], 
+# 两阶段
+second_metric_head, state_path_head = flat_main(stage2_param['batch_2'], stage2_param['lr_2'],stage1_param['dim'], 
                                       stage1_param['head'], stage2_param['warmup_2'], dataset=data, device=device,
                                ck=state_path_ctr, output_dir=output_dir,
                                weight_decay=stage2_param['wd_2'],only_head=False,
+                   seed=fixed_seed, lambda_hsr=0, cf_lambda=0)
+
+second_metric, state_path = flat_main(stage2_param['batch_2'], stage2_param['lr_2'],stage1_param['dim'], 
+                                      stage1_param['head'], stage2_param['warmup_2'], dataset=data, device=device,
+                               ck=state_path_head, output_dir=output_dir,
+                               weight_decay=stage2_param['wd_2'],only_head=False,
                    seed=fixed_seed, lambda_hsr=stage2_param['lambda_hsr'], cf_lambda=stage2_param['cf_lambda'])
 
+
+# 一阶段
+# second_metric, state_path = flat_main(stage2_param['batch_2'], stage2_param['lr_2'],stage1_param['dim'], 
+#                                       stage1_param['head'], stage2_param['warmup_2'], dataset=data, device=device,
+#                                ck=state_path_ctr, output_dir=output_dir,
+#                                weight_decay=stage2_param['wd_2'],only_head=False,
+#                    seed=fixed_seed, lambda_hsr=stage2_param['lambda_hsr'], cf_lambda=stage2_param['cf_lambda'])
 
 
 writer.write(str(second_metric) + '\n')
