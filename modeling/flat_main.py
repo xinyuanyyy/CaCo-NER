@@ -211,7 +211,9 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
     now_time = get_peking_time()
     logger.add_file('log/{}'.format(now_time),level='info')
     if args.test_batch == -1:
-        args.test_batch = args.batch//2
+        args.test_batch = args.batch
+        # args.test_batch = 1
+
     # fitlog.add_hyper(now_time,'time')
     if args.debug:
         # args.dataset = 'toy'
@@ -947,18 +949,40 @@ def flat_main(batch=10,lr=1e-3,head_dim=20,head=8,warmup=0.1,dataset='weibo',dev
         if is_ctr:
             max_patience=10
         test_data = datasets.get('test')
-        # New CMeEE-V2 test split contains no gold entity annotations (often all 'O'),
-        # so we avoid using it for metric reporting/early model selection.
+        # New CMeEE-V2 test split contains no gold entity annotations.
+        # The upstream fastNLP Trainer may still assume `tester_test` exists during validation,
+        # so we provide a labeled placeholder split to keep training stable.
         if args.dataset == 'cmeee_v2_big':
-            test_data = None
+            test_data = datasets.get('dev')
 
-        trainer = Trainer(datasets['train'],model,optimizer,loss,args.batch,
-                          n_epochs=args.epoch,
-                          dev_data=datasets['dev'],test_data=test_data,
-                          metrics=metrics,
-                          device=device,callbacks=callbacks,dev_batch_size=args.test_batch,
-                          test_use_tqdm=False,check_code_level=-1,
-                          update_every=args.update_every,is_ctr=is_ctr,save_path=output_dir,train_writer=writer,max_patience=max_patience,args=args,params=param_)
+        trainer_kwargs = dict(
+            n_epochs=args.epoch,
+            dev_data=datasets['dev'],
+            metrics=metrics,
+            device=device,
+            callbacks=callbacks,
+            dev_batch_size=args.test_batch,
+            test_use_tqdm=False,
+            check_code_level=-1,
+            update_every=args.update_every,
+            is_ctr=is_ctr,
+            save_path=output_dir,
+            train_writer=writer,
+            max_patience=max_patience,
+            args=args,
+            params=param_,
+        )
+        if test_data is not None:
+            trainer_kwargs['test_data'] = test_data
+
+        trainer = Trainer(
+            datasets['train'],
+            model,
+            optimizer,
+            loss,
+            args.batch,
+            **trainer_kwargs,
+        )
 
         best_metric,saving_path,best_epoch,results=trainer.train()
         if is_ctr:

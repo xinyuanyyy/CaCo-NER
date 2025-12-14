@@ -7,7 +7,7 @@ from datetime import datetime
 print("start training (CMeEE-V2 major categories)!")
 
 stage1_param = {
-    'batch': 16,
+    'batch': 32,
     'lr':   0.0008,
     'dim': 20,
     'head':10,
@@ -15,7 +15,8 @@ stage1_param = {
     'warmup':0.1,
     'temp':0.07,
     'hard_k': 0,
-    'hard_weight': 0.0
+    'hard_weight': 0.0,
+    'test_batch': 1
 }
 
 stage2_param = {
@@ -24,7 +25,8 @@ stage2_param = {
     'warmup_2':0.1,
     'wd_2':  0,
     'lambda_hsr': 0.0,
-    'cf_lambda': 0.0
+    'cf_lambda': 0.0,
+    'test_batch': 1
 }
 
 ##################### Manual set params #########################
